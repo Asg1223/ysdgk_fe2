@@ -64,6 +64,9 @@ class App:
         self.rank = Ranking(os.path.join(base, "scores.json"))
         self.engine = GameEngine(cfg["game"], aspect=self.W / self.H)
 
+        self.mode = cfg["game"].get("mode", "touch")   # "grab" = 掴んで取る
+        self.grab = False
+        self.calib_step = 0
         self.state = ATTRACT
         self.state_t = time.time()
         self.frame = None
@@ -80,12 +83,22 @@ class App:
         self.dark.set_alpha(115)
         self.dark.fill((5, 8, 20))
         self.cursor_r = float(cfg["marker"].get("cursor_radius", 46)) / self.H
+
+        # ボタンが無い構成のための「マーカーをかざしてスタート」
+        inp = cfg.data.get("input", {})
+        self.hold_enabled = bool(inp.get("hold_to_start", True)) and (
+            not self.io.available or inp.get("always_show", False))
+        self.hold_sec = float(inp.get("hold_seconds", 1.8))
+        self.hold_since = None
         self.io.led_blink(0.9)
 
     # ---------------- 入出力 ----------------
     def set_state(self, s):
         self.state = s
         self.state_t = time.time()
+        self.hold_since = None
+        if s == CALIB:
+            self.calib_step = 0
 
     def toast(self, text):
         self.msg, self.msg_t = text, time.time()
@@ -134,11 +147,14 @@ class App:
                 self.frame = f
                 self.det = self.tracker.update(f)
                 self.marker = (self.det.x, self.det.y) if self.det.found else None
+                self.grab = bool(self.det.grab) if self.mode == "grab" else True
                 return
         # カメラが無い場合はマウスで代用（PC での動作確認・非常時用）
         mx, my = pygame.mouse.get_pos()
         self.marker = (mx / self.W, my / self.H)
         self.det = None
+        # カメラなしのときは左クリックを「握り」として扱う（動作確認用）
+        self.grab = pygame.mouse.get_pressed()[0] if self.mode == "grab" else True
 
     # ---------------- 描画部品 ----------------
     def draw_camera_bg(self):
@@ -165,6 +181,55 @@ class App:
         self.screen.blit(img, r)
         return r
 
+    def hold_button(self, nx, ny, label, now=None):
+        """円の上にマーカーを一定時間置いたらスタート扱いにする。
+
+        物理ボタンが無くても、係の人がキーを押さなくても回せるようにするため。
+        """
+        if not self.hold_enabled:
+            return False
+        now = now or time.time()
+        # 握って始める場合は短くてよい（狙って握る動作自体が意思表示になる）
+        hold_sec = 0.7 if self.mode == "grab" else self.hold_sec
+        x, y = int(nx * self.W), int(ny * self.H)
+        r = int(self.H * 0.085)
+        inside = False
+        if self.marker:
+            dx = (self.marker[0] - nx) * self.W
+            dy = (self.marker[1] - ny) * self.H
+            inside = (dx * dx + dy * dy) ** 0.5 < r + self.cursor_r * self.H * 0.5
+        if inside and self.mode == "grab":
+            inside = self.grab            # 的の上で手を握ったときだけ溜まる
+        if inside:
+            if self.hold_since is None:
+                self.hold_since = now
+                self.snd.play("beep")
+            frac = min(1.0, (now - self.hold_since) / hold_sec)
+        else:
+            self.hold_since = None
+            frac = 0.0
+
+        col = GREEN if inside else WHITE
+        pygame.draw.circle(self.screen, (12, 30, 24), (x, y), r)
+        pygame.draw.circle(self.screen, col, (x, y), r, 5)
+        if frac > 0:
+            rect = pygame.Rect(x - r + 8, y - r + 8, 2 * (r - 8), 2 * (r - 8))
+            pygame.draw.arc(self.screen, GOLD, rect, math.pi / 2,
+                            math.pi / 2 + 2 * math.pi * frac, 12)
+        img = self.fonts.small.render(label, True, col)
+        self.screen.blit(img, img.get_rect(center=(x, y + r + 30)))
+        if inside:      # 溜まっている間だけ秒数を出す（普段は的だけ見せる）
+            left = max(0.0, hold_sec - (now - self.hold_since))
+            cnt = self.fonts.big.render(str(max(1, math.ceil(left))), True, GOLD)
+        else:
+            cnt = self.fonts.big.render("◎", True, DIM)
+        self.screen.blit(cnt, cnt.get_rect(center=(x, y)))
+
+        if frac >= 1.0:
+            self.hold_since = None
+            return True
+        return False
+
     def draw_cursor(self):
         if not self.marker:
             return
@@ -172,10 +237,20 @@ class App:
         r = int(self.cursor_r * self.H)
         col = hsv_to_rgb(self.tracker.hue)
         held = bool(self.det and self.det.held)
-        pygame.draw.circle(self.screen, col, (x, y), r, 4 if not held else 2)
-        pygame.draw.circle(self.screen, WHITE, (x, y), max(3, r // 8))
-        pygame.draw.line(self.screen, col, (x - r - 10, y), (x - r + 4, y), 3)
-        pygame.draw.line(self.screen, col, (x + r - 4, y), (x + r + 10, y), 3)
+        grabbing = self.mode == "grab" and self.grab
+        if grabbing:
+            # 握っている間は塗りつぶし＋金色のふちで「掴んでいる」ことを伝える
+            pygame.draw.circle(self.screen, col, (x, y), int(r * 0.8))
+            pygame.draw.circle(self.screen, GOLD, (x, y), int(r * 0.8), 6)
+            for a in (-2.2, -0.9, 0.4, 1.7, 2.9):
+                pygame.draw.line(self.screen, GOLD,
+                                 (x + int(r * 0.8 * math.cos(a)), y + int(r * 0.8 * math.sin(a))),
+                                 (x + int(r * 1.15 * math.cos(a)), y + int(r * 1.15 * math.sin(a))), 4)
+        else:
+            pygame.draw.circle(self.screen, col, (x, y), r, 4 if not held else 2)
+            pygame.draw.circle(self.screen, WHITE, (x, y), max(3, r // 8))
+            pygame.draw.line(self.screen, col, (x - r - 10, y), (x - r + 4, y), 3)
+            pygame.draw.line(self.screen, col, (x + r - 4, y), (x + r + 10, y), 3)
 
     def draw_target(self, t, now):
         x, y = int(t.x * self.W), int(t.y * self.H)
@@ -237,8 +312,11 @@ class App:
         self.draw_camera_bg()
         T = self.fonts.t
         self.text(self.cfg["ui"]["title"], self.fonts.big, GOLD, y=int(self.H * 0.06))
-        self.text(T("howto1"), self.fonts.small, WHITE, y=int(self.H * 0.22))
-        self.text(T("howto2"), self.fonts.small, WHITE, y=int(self.H * 0.28))
+        g = self.mode == "grab"
+        self.text(T("howto1_grab" if g else "howto1"), self.fonts.small, WHITE,
+                  y=int(self.H * 0.22))
+        self.text(T("howto2_grab" if g else "howto2"), self.fonts.small, WHITE,
+                  y=int(self.H * 0.28))
         self.text(T("howto3", sec=self.cfg["game"]["duration"]), self.fonts.small,
                   DIM, y=int(self.H * 0.34))
 
@@ -259,8 +337,12 @@ class App:
         self.text(T("plays", n=st["plays"]), self.fonts.tiny, DIM, y=int(self.H * 0.95))
         if not self.cam_ok:
             self.text(T("nocam"), self.fonts.tiny, RED, x=14, y=int(self.H * 0.95))
+        if self.hold_button(0.135, 0.60, T("hold_start_grab" if g else "hold_start")):
+            go = True
+        key = "press" if not self.hold_enabled else (
+            "press_or_grab" if g else "press_or_hold")
         if int(now * 2) % 2 == 0:
-            self.text(T("press"), self.fonts.mid, GREEN, y=int(self.H * 0.865))
+            self.text(T(key), self.fonts.mid, GREEN, y=int(self.H * 0.865))
         self.draw_cursor()
         self.draw_debug()
         if go:
@@ -269,31 +351,69 @@ class App:
             self.set_state(COUNTDOWN)
 
     def screen_calib(self, go):
+        """①色あわせ →（掴むモードなら）②パー ③グー の順に登録する。"""
         self.draw_camera_bg()
         T = self.fonts.t
-        w, h = int(self.W * 0.22), int(self.H * 0.22)
-        rect = pygame.Rect((self.W - w) // 2, (self.H - h) // 2, w, h)
-        pygame.draw.rect(self.screen, GOLD, rect, 5)
-        self.text(T("calib_title"), self.fonts.mid, GOLD, y=int(self.H * 0.10))
-        self.text(T("calib_msg"), self.fonts.small, WHITE, y=int(self.H * 0.20))
-        self.text(T("calib_keys"), self.fonts.tiny, DIM, y=int(self.H * 0.86))
+        g = self.mode == "grab"
+        step = self.calib_step
+        self.text(T("calib_title"), self.fonts.mid, GOLD, y=int(self.H * 0.06))
+
+        if step == 0:
+            w, h = int(self.W * 0.22), int(self.H * 0.22)
+            rect = pygame.Rect((self.W - w) // 2, (self.H - h) // 2, w, h)
+            pygame.draw.rect(self.screen, GOLD, rect, 5)
+            self.text(T("calib_step1"), self.fonts.small, WHITE, y=int(self.H * 0.16))
+        else:
+            self.text(T("calib_step2" if step == 1 else
+                        ("calib_step3" if step == 2 else "calib_done")),
+                      self.fonts.small, WHITE if step < 3 else GREEN, y=int(self.H * 0.16))
+
+        # いま何が見えているかを数字で出す（当日の調整はこれを見ながら）
+        if self.det is not None and self.det.found:
+            self.text(f"fill {self.det.fill:.2f}   solidity {self.det.solidity:.2f}"
+                      f"   しきい値 {self.tracker.grab_off:.2f}/{self.tracker.grab_on:.2f}",
+                      self.fonts.tiny, DIM, y=int(self.H * 0.24))
+            if g and step >= 2:
+                self.text("グー" if self.grab else "パー", self.fonts.big,
+                          GOLD if self.grab else CYAN, y=int(self.H * 0.62))
         sw = pygame.Surface((80, 80))
         sw.fill(hsv_to_rgb(self.tracker.hue))
         self.screen.blit(sw, (self.W // 2 - 40, int(self.H * 0.74)))
+        self.text(T("calib_keys"), self.fonts.tiny, DIM, y=int(self.H * 0.90))
+        if time.time() - self.msg_t < 5:
+            self.text(self.msg, self.fonts.small, GREEN, y=int(self.H * 0.84))
         self.draw_cursor()
-        self.debug_backup = self.debug
-        self.debug = True
-        self.draw_debug(self.msg if time.time() - self.msg_t < 4 else "")
-        self.debug = self.debug_backup
-        if go and self.frame is not None:
+        dbg, self.debug = self.debug, True
+        self.draw_debug()
+        self.debug = dbg
+
+        if not go:
+            return
+        if self.frame is None:
+            self.toast("カメラ映像がありません")
+            return
+        if step == 0:
             ok, msg = self.tracker.calibrate(self.frame)
             self.toast(msg)
             self.snd.play("coin" if ok else "miss")
             if ok:
-                self.cfg.data["marker"].update(self.tracker.export())
-                self.cfg.save()
-        elif go:
-            self.toast("カメラ映像がありません")
+                self.calib_step = 1 if g else 3
+                self._save_marker()
+        elif step in (1, 2):
+            ok, msg = self.tracker.calibrate_gesture(
+                self.frame, "open" if step == 1 else "closed")
+            self.toast(msg)
+            self.snd.play("coin" if ok else "miss")
+            if ok:
+                self.calib_step = step + 1
+                if self.calib_step == 3:
+                    self._save_marker()
+        else:
+            self.set_state(ATTRACT)
+
+    def _save_marker(self):
+        self.cfg.data["marker"].update(self.tracker.export())
+        self.cfg.save()
 
     def screen_countdown(self, go):
         self.draw_camera_bg()
@@ -320,7 +440,8 @@ class App:
     def screen_play(self, go):
         now = time.time()
         self.draw_camera_bg()
-        events = self.engine.update(now, self.marker, self.cursor_r)
+        events = self.engine.update(now, self.marker, self.cursor_r,
+                                    can_take=(self.grab or self.mode != "grab"))
         for name, t, pts in events:
             if name == "hit":
                 self.snd.play("hit")
@@ -342,8 +463,17 @@ class App:
                 return
         for t in self.engine.targets:
             self.draw_target(t, now)
-        self.draw_pops(now)
+        # 手が◯に重なっているのに握っていない人へのヒント
+        if self.mode == "grab" and self.marker and not self.grab:
+            for t in self.engine.targets:
+                if t.kind != BOMB and self.engine._dist(
+                        self.marker[0], self.marker[1], t.x, t.y) <= t.r + self.cursor_r * 1.6:
+                    img = self.fonts.small.render(self.fonts.t("grab_now"), True, GOLD)
+                    self.screen.blit(img, img.get_rect(
+                        center=(int(t.x * self.W), int(t.y * self.H - t.r * self.H - 34))))
+                    break
         self.draw_cursor()
+        self.draw_pops(now)      # 得点表示はカーソルより手前に
 
         # HUD
         T = self.fonts.t
@@ -384,8 +514,14 @@ class App:
                   self.fonts.small, DIM, y=int(self.H * 0.62))
         self.text(f"{T('name')} {self.name or '____'}", self.fonts.small,
                   WHITE, y=int(self.H * 0.70))
+        g = self.mode == "grab"
+        if self.hold_button(0.135, 0.60, T("hold_again_grab" if g else "hold_again")):
+            go = True
         if int(now * 2) % 2 == 0:
-            self.text(T("again"), self.fonts.mid, GREEN, y=int(self.H * 0.82))
+            self.text(T("again" if not self.hold_enabled else
+                        ("again_or_grab" if g else "again_or_hold")),
+                      self.fonts.mid, GREEN, y=int(self.H * 0.82))
+        self.draw_cursor()
         self.draw_debug()
         # ボタンか一定時間でランキング保存 → 待機画面へ
         if go or now - self.state_t > 25:

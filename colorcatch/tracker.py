@@ -9,15 +9,20 @@ import numpy as np
 
 
 class Detection:
-    __slots__ = ("found", "x", "y", "area", "radius", "held")
+    __slots__ = ("found", "x", "y", "area", "radius", "held", "fill", "solidity", "grab")
 
-    def __init__(self, found=False, x=0.5, y=0.5, area=0.0, radius=0.0, held=False):
+    def __init__(self, found=False, x=0.5, y=0.5, area=0.0, radius=0.0, held=False,
+                 fill=0.0, solidity=0.0, grab=False):
         self.found = found
         self.x = x          # 0.0-1.0（画面左→右）
         self.y = y          # 0.0-1.0（画面上→下）
         self.area = area    # ピクセル数
         self.radius = radius
         self.held = held    # 直前位置で補間中か
+        # ↓ 手の開閉判定用。どちらも面積比なので、カメラからの距離が変わっても値が動かない
+        self.fill = fill            # 輪郭面積 / 最小外接円の面積（グーで大、パーで小）
+        self.solidity = solidity    # 輪郭面積 / 凸包面積（指の間の隙間が減ると大）
+        self.grab = grab            # 掴んでいるか
 
 
 class ColorTracker:
@@ -34,6 +39,13 @@ class ColorTracker:
         self._last = None       # (x, y)
         self._lost = 999
         self.last_mask = None
+        # 握り判定のしきい値（ヒステリシス付き。calibrate_gesture で上書きされる）
+        self.grab_on = float(marker_cfg.get("grab_on", 0.62))
+        self.grab_off = float(marker_cfg.get("grab_off", 0.52))
+        self._grab = False
+        self._grab_frames = 0
+        self.open_fill = float(marker_cfg.get("open_fill", 0.0)) or None
+        self.closed_fill = float(marker_cfg.get("closed_fill", 0.0)) or None
 
     # ---------- 内部 ----------
     def _mask(self, bgr):
@@ -81,13 +93,72 @@ class ColorTracker:
                 ny = self._last[1] * s + ny * (1 - s)
             self._last = (nx, ny)
             self._lost = 0
-            return Detection(True, nx, ny, best_area, float(np.sqrt(best_area / np.pi)))
+            fill, sol = self._shape(best, best_area)
+            grab = self._update_grab(fill)
+            return Detection(True, nx, ny, best_area,
+                             float(np.sqrt(best_area / np.pi)),
+                             fill=fill, solidity=sol, grab=grab)
 
         # 見失った直後は数フレームだけ直前位置を保持（ちらつき防止）
         self._lost += 1
         if self._last is not None and self._lost <= self.hold_frames:
-            return Detection(True, self._last[0], self._last[1], 0.0, 0.0, held=True)
+            return Detection(True, self._last[0], self._last[1], 0.0, 0.0,
+                             held=True, grab=self._grab)
+        self._grab, self._grab_frames = False, 0
         return Detection(False)
+
+    @staticmethod
+    def _shape(contour, area):
+        """輪郭の「詰まり具合」を2通りで測る。どちらも 0-1 で距離に依存しない。"""
+        (_, _), r = cv2.minEnclosingCircle(contour)
+        circ = np.pi * r * r
+        fill = float(area / circ) if circ > 1 else 0.0
+        hull = cv2.convexHull(contour)
+        ha = cv2.contourArea(hull)
+        sol = float(area / ha) if ha > 1 else 0.0
+        return fill, sol
+
+    def _update_grab(self, fill):
+        """しきい値を2つ使い、2フレーム続いて初めて状態を変える（誤判定防止）。"""
+        want = self._grab
+        if not self._grab and fill >= self.grab_on:
+            want = True
+        elif self._grab and fill <= self.grab_off:
+            want = False
+        if want != self._grab:
+            self._grab_frames += 1
+            if self._grab_frames >= 2:
+                self._grab = want
+                self._grab_frames = 0
+        else:
+            self._grab_frames = 0
+        return self._grab
+
+    def calibrate_gesture(self, bgr, which):
+        """パー(open)／グー(closed)の見え方を登録し、しきい値を自動で決める。"""
+        mask = self._mask(bgr)
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        best, ba = None, 0.0
+        for c in cnts:
+            a = cv2.contourArea(c)
+            if a > ba:
+                best, ba = c, a
+        if best is None or ba < self.min_area:
+            return False, "手が見つかりません（色あわせをやり直してください）"
+        fill, _ = self._shape(best, ba)
+        if which == "open":
+            self.open_fill = fill
+        else:
+            self.closed_fill = fill
+        if self.open_fill and self.closed_fill:
+            lo, hi = self.open_fill, self.closed_fill
+            if hi - lo < 0.06:
+                return False, "パーとグーの差が小さすぎます（指をしっかり開いて）"
+            self.grab_on = lo + (hi - lo) * 0.60
+            self.grab_off = lo + (hi - lo) * 0.35
+            return True, (f"登録しました パー={lo:.2f} グー={hi:.2f} "
+                          f"→ しきい値 {self.grab_off:.2f}/{self.grab_on:.2f}")
+        return True, f"{'パー' if which == 'open' else 'グー'}を登録 (fill={fill:.2f})"
 
     def calibrate(self, bgr, roi_ratio=0.22):
         """画面中央の四角に写っているものの色を新しいマーカー色として採用する。"""
@@ -119,7 +190,10 @@ class ColorTracker:
                 "sat_min": self.sat_min, "val_min": self.val_min,
                 "min_area": self.min_area, "smooth": self.smooth,
                 "hold_frames": self.hold_frames,
-                "cursor_radius": self.cfg.get("cursor_radius", 46)}
+                "cursor_radius": self.cfg.get("cursor_radius", 46),
+                "grab_on": round(self.grab_on, 3), "grab_off": round(self.grab_off, 3),
+                "open_fill": round(self.open_fill or 0.0, 3),
+                "closed_fill": round(self.closed_fill or 0.0, 3)}
 
 
 class Camera:

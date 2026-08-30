@@ -88,8 +88,11 @@ class GameEngine:
         dy = y1 - y2
         return (dx * dx + dy * dy) ** 0.5
 
-    def update(self, now, marker, cursor_r=0.05):
-        """marker は (x, y) または None。発生したイベントのリストを返す。"""
+    def update(self, now, marker, cursor_r=0.05, can_take=True):
+        """marker は (x, y) または None。can_take=False なら触れても取れない（掴むモード）。
+
+        発生したイベントのリストを返す。
+        """
         events = []
         if not self.running:
             return events
@@ -117,8 +120,8 @@ class GameEngine:
                 alive.append(t)
         self.targets = alive
 
-        # 当たり判定
-        if marker is not None:
+        # 当たり判定（掴むモードでは、手を握っている間だけ取れる）
+        if marker is not None and can_take:
             mx, my = marker
             remain = []
             for t in self.targets:
