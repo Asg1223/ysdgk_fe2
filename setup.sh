@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # カラーキャッチ！ セットアップ（Raspberry Pi OS Bullseye / Bookworm 用）
 set -e
+cd "$(dirname "$0")"
+
+# zip をWindows/Macや FAT のUSB経由で展開すると実行権限が落ちるので、ここで直す
+chmod +x ./*.sh ./main.py ./selftest.py 2>/dev/null || true
+# Windowsで編集された場合の改行コードも直す
+sed -i 's/\r$//' ./*.sh 2>/dev/null || true
+
 echo "== 必要なパッケージを入れます（10分ほどかかります）=="
 sudo apt-get update
 # pip でビルドすると Pi 3 では30分以上かかるため、必ず apt 版を使う

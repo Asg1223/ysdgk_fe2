@@ -24,6 +24,23 @@ def synth_frame(w, h, t):
     return f, (cx / w, cy / h)
 
 
+def synth_hand(w, h, open_hand, cx=None, cy=None, R=34):
+    """パー／グーの合成映像（赤い手袋を想定）。"""
+    import math
+    f = np.full((h, w, 3), 45, np.uint8)
+    cx = int(w * 0.5) if cx is None else cx
+    cy = int(h * 0.5) if cy is None else cy
+    if not open_hand:
+        cv2.circle(f, (cx, cy), int(R * 0.8), (35, 35, 210), -1)
+    else:
+        cv2.circle(f, (cx, cy), int(R * 0.55), (35, 35, 210), -1)
+        for a in (-100, -70, -40, -10, 40):
+            x2 = int(cx + R * 1.5 * math.cos(math.radians(a)))
+            y2 = int(cy + R * 1.5 * math.sin(math.radians(a)))
+            cv2.line(f, (cx, cy), (x2, y2), (35, 35, 210), 9)
+    return f
+
+
 def run_selftest(cfg):
     from colorcatch.tracker import ColorTracker
     from colorcatch.engine import GameEngine
@@ -105,6 +122,37 @@ def run_selftest(cfg):
     app.close()
     print(f"[4] 1フレーム   {ms:5.2f} ms  → この PC で約 {1000/ms:4.0f} fps")
     print(f"    Pi 3 は概ね 5-8 倍遅いので実機で 約 {1000/(ms*6):4.0f} fps 前後の見込み")
+    # 5) 掴む動作（グー／パー）の判定
+    tg = ColorTracker(dict(cfg["marker"]))
+    tg.calibrate(synth_hand(w, h, False))                    # 手袋の色を登録
+    tg.calibrate_gesture(synth_hand(w, h, True), "open")
+    okg, gmsg = tg.calibrate_gesture(synth_hand(w, h, False), "closed")
+    seq = "".join("G" if tg.update(synth_hand(w, h, i % 6 < 3)).grab else "-"
+                  for i in range(18))
+    changes = sum(1 for a, b in zip(seq, seq[1:]) if a != b)
+    print(f"[5] つかむ判定  {gmsg}")
+    print(f"    パー3→グー3を3周: {seq}  (- =パー, G =グー / 切替 {changes} 回)")
+    if not okg or changes < 4:
+        ok = False
+        print("    → NG: グー／パーの判定が追従していません")
+
+    # 6) 掴むモードでは、触っただけでは取れないこと
+    eng2 = GameEngine(cfg["game"], seed=3)
+    eng2.reset(0.0)
+    t = 0.0
+    while not eng2.targets and t < 3:
+        t += 1 / 30
+        eng2.update(t, None, 0.05)
+    tgt = eng2.targets[0]
+    eng2.update(t + 0.03, (tgt.x, tgt.y), 0.05, can_take=False)
+    touched_only = eng2.score
+    eng2.update(t + 0.06, (tgt.x, tgt.y), 0.05, can_take=True)
+    grabbed = eng2.score
+    print(f"[6] 掴む条件    触れただけ={touched_only}点 → 握った={grabbed}点")
+    if touched_only != 0 or grabbed <= 0:
+        ok = False
+        print("    → NG: 握らなくても取れてしまいます")
+
     print("-" * 58)
     print(" 結果:", "OK すべて通過" if ok else "NG 上の項目を確認してください")
     return 0 if ok else 1

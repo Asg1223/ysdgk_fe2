@@ -6,6 +6,7 @@
     "min_area": 250, "smooth": 0.45, "hold_frames": 6, "cursor_radius": 46
   },
   "game": {
+    "mode": "grab",
     "duration": 30,
     "spawn_interval_start": 1.10,
     "spawn_interval_end": 0.55,
@@ -19,6 +20,7 @@
     "combo_window": 2.0,
     "combo_max": 5
   },
+  "input": { "hold_to_start": true, "hold_seconds": 1.8, "always_show": false },
   "gpio": { "enabled": true, "button_pin": 17, "led_pin": 27, "active_low": true },
   "audio": { "enabled": true, "volume": 0.7 },
   "ui": { "language": "ja", "team_name": "3-B", "title": "カラーキャッチ！" }
