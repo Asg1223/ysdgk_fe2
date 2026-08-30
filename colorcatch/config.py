@@ -5,8 +5,11 @@ import os
 DEFAULT = {
     "screen": {"width": 1280, "height": 720, "fullscreen": True, "fps": 30},
     "camera": {"index": 0, "width": 320, "height": 240, "mirror": True, "use_picamera": False},
-    "marker": {"hue": 0, "hue_tol": 12, "sat_min": 120, "val_min": 70,
+    "marker": {"mode": "skin", "skin_tol_cr": 18, "skin_tol_cb": 16, "hue": 0, "hue_tol": 12, "sat_min": 120, "val_min": 70,
                "min_area": 250, "smooth": 0.45, "hold_frames": 6, "cursor_radius": 46},
+    "skin": {"cr": [133, 177], "cb": [77, 127], "sat_min": 25, "val_min": 40,
+             "motion_gate": True, "face_filter": True, "face_every": 15,
+             "learn_rate": 0.0015, "min_area": 220},
     "game": {"mode": "grab", "duration": 30, "spawn_interval_start": 1.10, "spawn_interval_end": 0.55,
              "target_ttl": 3.2, "max_targets": 5, "bonus_rate": 0.16, "bomb_rate": 0.18,
              "score_normal": 10, "score_bonus": 30, "score_bomb": -20,
