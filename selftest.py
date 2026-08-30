@@ -153,6 +153,83 @@ def run_selftest(cfg):
         ok = False
         print("    → NG: 握らなくても取れてしまいます")
 
+    # 7) 素手（肌色）追跡：木の机・顔がある場面で手だけを追えるか
+    from colorcatch.tracker import SkinTracker
+    import math as _m
+
+    def skin_scene(tone, t, hand=True, open_hand=True, hx=None, hy=None):
+        f = np.full((h, w, 3), (150, 150, 148), np.uint8)
+        cv2.rectangle(f, (0, int(h * .62)), (w, h), (55, 105, 160), -1)   # 木の机
+        cv2.rectangle(f, (20, int(h * .66)), (110, int(h * .9)), (40, 70, 120), -1)  # 段ボール
+        cv2.ellipse(f, (int(w * .5), int(h * .25)), (30, 38), 0, 0, 360, tone, -1)   # 顔
+        if not hand:
+            return f, None
+        cx = hx if hx is not None else int(w * (0.5 + 0.30 * _m.cos(t * 1.9)))
+        cy = hy if hy is not None else int(h * (0.55 + 0.22 * _m.sin(t * 1.5)))
+        R = 26
+        if open_hand:
+            cv2.circle(f, (cx, cy), int(R * 0.55), tone, -1)
+            for a in (-105, -72, -40, -8, 45):
+                cv2.line(f, (cx, cy), (int(cx + R * 1.5 * _m.cos(_m.radians(a))),
+                                       int(cy + R * 1.5 * _m.sin(_m.radians(a)))), tone, 8)
+        else:
+            cv2.circle(f, (cx, cy), int(R * 0.8), tone, -1)
+        return f, (cx / w, cy / h)
+
+    tones = {"明るい肌": (150, 185, 225), "中間の肌": (95, 130, 175), "濃い肌": (58, 80, 118)}
+    worst_hit, worst_err, t_ms = 1.0, 0.0, 0.0
+    for tname, tone in tones.items():
+        st = SkinTracker(dict(cfg["marker"]), dict(cfg["skin"]))
+        st.learn_background(skin_scene(tone, 0, hand=False)[0])
+        errs, hits, face_hits, N = [], 0, 0, 60
+        t0 = time.time()
+        for i in range(N):
+            f, truth = skin_scene(tone, i * 0.09)
+            d = st.update(f)
+            if d.found and not d.held:
+                hits += 1
+                errs.append(((d.x - truth[0]) ** 2 + (d.y - truth[1]) ** 2) ** 0.5)
+                if ((d.x - 0.5) ** 2 + (d.y - 0.25) ** 2) ** 0.5 < 0.10:
+                    face_hits += 1
+        t_ms = max(t_ms, (time.time() - t0) / N * 1000)
+        st.calibrate_gesture(skin_scene(tone, 3.0, hx=w // 2, hy=int(h * .55))[0], "open")
+        st.calibrate_gesture(skin_scene(tone, 3.1, open_hand=False,
+                                        hx=w // 2, hy=int(h * .55))[0], "closed")
+        gseq = "".join("G" if st.update(skin_scene(
+            tone, 3.2 + i * .1, open_hand=(i % 6 < 3), hx=w // 2, hy=int(h * .55))[0]).grab
+            else "-" for i in range(12))
+        hr = hits / N
+        me = float(np.mean(errs)) if errs else 1.0
+        worst_hit, worst_err = min(worst_hit, hr), max(worst_err, me)
+        print(f"[7] 素手 {tname:6s} 検出率 {hr*100:5.1f}%  平均誤差 {me*100:4.1f}%  "
+              f"顔を誤検出 {face_hits}回  グー判定 {gseq}")
+        if hr < 0.9 or me > 0.09 or face_hits > 0:
+            ok = False
+            print("    → NG: 素手追跡が不安定です（背景・照明を確認）")
+    print(f"    素手モードの処理 {t_ms:5.2f} ms/frame → Pi 3 で 約 {1000/(t_ms*6):4.0f} fps 相当")
+
+    # 8) 素手モードの色あわせと、プレイ中の背景凍結
+    for tname, tone in tones.items():
+        st = SkinTracker(dict(cfg["marker"]), dict(cfg["skin"]))
+        st.learn_background(skin_scene(tone, 0, hand=False)[0])
+        okc, msg = st.calibrate(skin_scene(tone, 0, hx=w // 2, hy=int(h * .55))[0])
+        d = [st.update(skin_scene(tone, 0, hx=w // 2, hy=int(h * .55))[0])
+             for _ in range(3)][-1]
+        print(f"[8] 色あわせ {tname:6s} {msg} → 再検出 {'OK' if d.found else 'NG'}")
+        if not okc or not d.found:
+            ok = False
+
+    st = SkinTracker(dict(cfg["marker"]), dict(cfg["skin"]))
+    st.learn_background(skin_scene(tones["中間の肌"], 0, hand=False)[0])
+    st.freeze(True)
+    still = sum(st.update(skin_scene(tones["中間の肌"], 0, open_hand=False,
+                                     hx=w // 2, hy=int(h * .55))[0]).found
+                for _ in range(900))
+    print(f"[9] 背景凍結    プレイ中(30秒)に手を静止させたまま 検出 {still}/900")
+    if still < 890:
+        ok = False
+        print("    → NG: 静止した手が背景に溶けています")
+
     print("-" * 58)
     print(" 結果:", "OK すべて通過" if ok else "NG 上の項目を確認してください")
     return 0 if ok else 1
