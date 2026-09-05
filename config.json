@@ -4,7 +4,7 @@
   "marker": {
     "mode": "skin",
     "skin_tol_cr": 18, "skin_tol_cb": 16,
-    "hue": 0, "hue_tol": 12, "sat_min": 120, "val_min": 70,
+    "hue": 120, "hue_tol": 120, "sat_min": 120, "val_min": 70,
     "min_area": 250, "smooth": 0.45, "hold_frames": 6, "cursor_radius": 46
   },
   "skin": {
