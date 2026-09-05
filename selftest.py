@@ -1,8 +1,11 @@
 """画面・カメラなしで一通り動かす自己テスト。
 
   1) 合成映像でマーカー追跡の精度を確認
-  2) ゲームロジックを 1 ゲーム分まわす
-  3) 描画込みの 1 フレーム処理時間を測り、Pi 3 で何 FPS 出そうか見積もる
+  2) 別の色に登録し直せるか（キャリブレーション）
+  3) ゲームロジックを 1 ゲーム分まわす
+  4) 描画込みの 1 フレーム処理時間を測り、Pi 3 で何 FPS 出そうか見積もる
+  5) 色プリセットが自分の色だけに反応するか
+  6) 教室にありがちな物に誤反応しないか
 """
 import os
 import sys
@@ -28,23 +31,6 @@ def synth_frame(w, h, t, color=(35, 35, 215)):
     cy = int(h * (0.5 + 0.32 * np.sin(t * 1.3)))
     cv2.circle(f, (cx, cy), 18, color, -1)
     return f, (cx / w, cy / h)
-
-
-def synth_hand(w, h, open_hand, cx=None, cy=None, R=34):
-    """パー／グーの合成映像（赤い手袋を想定）。"""
-    import math
-    f = np.full((h, w, 3), 45, np.uint8)
-    cx = int(w * 0.5) if cx is None else cx
-    cy = int(h * 0.5) if cy is None else cy
-    if not open_hand:
-        cv2.circle(f, (cx, cy), int(R * 0.8), (35, 35, 210), -1)
-    else:
-        cv2.circle(f, (cx, cy), int(R * 0.55), (35, 35, 210), -1)
-        for a in (-100, -70, -40, -10, 40):
-            x2 = int(cx + R * 1.5 * math.cos(math.radians(a)))
-            y2 = int(cy + R * 1.5 * math.sin(math.radians(a)))
-            cv2.line(f, (cx, cy), (x2, y2), (35, 35, 210), 9)
-    return f
 
 
 def run_selftest(cfg):
@@ -132,115 +118,7 @@ def run_selftest(cfg):
     app.close()
     print(f"[4] 1フレーム   {ms:5.2f} ms  → この PC で約 {1000/ms:4.0f} fps")
     print(f"    Pi 3 は概ね 5-8 倍遅いので実機で 約 {1000/(ms*6):4.0f} fps 前後の見込み")
-    # 5) 掴む動作（グー／パー）の判定
-    tg = ColorTracker(dict(cfg["marker"]))
-    tg.calibrate(synth_hand(w, h, False))                    # 手袋の色を登録
-    tg.calibrate_gesture(synth_hand(w, h, True), "open")
-    okg, gmsg = tg.calibrate_gesture(synth_hand(w, h, False), "closed")
-    seq = "".join("G" if tg.update(synth_hand(w, h, i % 6 < 3)).grab else "-"
-                  for i in range(18))
-    changes = sum(1 for a, b in zip(seq, seq[1:]) if a != b)
-    print(f"[5] つかむ判定  {gmsg}")
-    print(f"    パー3→グー3を3周: {seq}  (- =パー, G =グー / 切替 {changes} 回)")
-    if not okg or changes < 4:
-        ok = False
-        print("    → NG: グー／パーの判定が追従していません")
-
-    # 6) 掴むモードでは、触っただけでは取れないこと
-    eng2 = GameEngine(cfg["game"], seed=3)
-    eng2.reset(0.0)
-    t = 0.0
-    while not eng2.targets and t < 3:
-        t += 1 / 30
-        eng2.update(t, None, 0.05)
-    tgt = eng2.targets[0]
-    eng2.update(t + 0.03, (tgt.x, tgt.y), 0.05, can_take=False)
-    touched_only = eng2.score
-    eng2.update(t + 0.06, (tgt.x, tgt.y), 0.05, can_take=True)
-    grabbed = eng2.score
-    print(f"[6] 掴む条件    触れただけ={touched_only}点 → 握った={grabbed}点")
-    if touched_only != 0 or grabbed <= 0:
-        ok = False
-        print("    → NG: 握らなくても取れてしまいます")
-
-    # 7) 素手（肌色）追跡：木の机・顔がある場面で手だけを追えるか
-    from colorcatch.tracker import SkinTracker
-    import math as _m
-
-    def skin_scene(tone, t, hand=True, open_hand=True, hx=None, hy=None):
-        f = np.full((h, w, 3), (150, 150, 148), np.uint8)
-        cv2.rectangle(f, (0, int(h * .62)), (w, h), (55, 105, 160), -1)   # 木の机
-        cv2.rectangle(f, (20, int(h * .66)), (110, int(h * .9)), (40, 70, 120), -1)  # 段ボール
-        cv2.ellipse(f, (int(w * .5), int(h * .25)), (30, 38), 0, 0, 360, tone, -1)   # 顔
-        if not hand:
-            return f, None
-        cx = hx if hx is not None else int(w * (0.5 + 0.30 * _m.cos(t * 1.9)))
-        cy = hy if hy is not None else int(h * (0.55 + 0.22 * _m.sin(t * 1.5)))
-        R = 26
-        if open_hand:
-            cv2.circle(f, (cx, cy), int(R * 0.55), tone, -1)
-            for a in (-105, -72, -40, -8, 45):
-                cv2.line(f, (cx, cy), (int(cx + R * 1.5 * _m.cos(_m.radians(a))),
-                                       int(cy + R * 1.5 * _m.sin(_m.radians(a)))), tone, 8)
-        else:
-            cv2.circle(f, (cx, cy), int(R * 0.8), tone, -1)
-        return f, (cx / w, cy / h)
-
-    tones = {"明るい肌": (150, 185, 225), "中間の肌": (95, 130, 175), "濃い肌": (58, 80, 118)}
-    worst_hit, worst_err, t_ms = 1.0, 0.0, 0.0
-    for tname, tone in tones.items():
-        st = SkinTracker(dict(cfg["marker"]), dict(cfg["skin"]))
-        st.learn_background(skin_scene(tone, 0, hand=False)[0])
-        errs, hits, face_hits, N = [], 0, 0, 60
-        t0 = time.time()
-        for i in range(N):
-            f, truth = skin_scene(tone, i * 0.09)
-            d = st.update(f)
-            if d.found and not d.held:
-                hits += 1
-                errs.append(((d.x - truth[0]) ** 2 + (d.y - truth[1]) ** 2) ** 0.5)
-                if ((d.x - 0.5) ** 2 + (d.y - 0.25) ** 2) ** 0.5 < 0.10:
-                    face_hits += 1
-        t_ms = max(t_ms, (time.time() - t0) / N * 1000)
-        st.calibrate_gesture(skin_scene(tone, 3.0, hx=w // 2, hy=int(h * .55))[0], "open")
-        st.calibrate_gesture(skin_scene(tone, 3.1, open_hand=False,
-                                        hx=w // 2, hy=int(h * .55))[0], "closed")
-        gseq = "".join("G" if st.update(skin_scene(
-            tone, 3.2 + i * .1, open_hand=(i % 6 < 3), hx=w // 2, hy=int(h * .55))[0]).grab
-            else "-" for i in range(12))
-        hr = hits / N
-        me = float(np.mean(errs)) if errs else 1.0
-        worst_hit, worst_err = min(worst_hit, hr), max(worst_err, me)
-        print(f"[7] 素手 {tname:6s} 検出率 {hr*100:5.1f}%  平均誤差 {me*100:4.1f}%  "
-              f"顔を誤検出 {face_hits}回  グー判定 {gseq}")
-        if hr < 0.9 or me > 0.09 or face_hits > 0:
-            ok = False
-            print("    → NG: 素手追跡が不安定です（背景・照明を確認）")
-    print(f"    素手モードの処理 {t_ms:5.2f} ms/frame → Pi 3 で 約 {1000/(t_ms*6):4.0f} fps 相当")
-
-    # 8) 素手モードの色あわせと、プレイ中の背景凍結
-    for tname, tone in tones.items():
-        st = SkinTracker(dict(cfg["marker"]), dict(cfg["skin"]))
-        st.learn_background(skin_scene(tone, 0, hand=False)[0])
-        okc, msg = st.calibrate(skin_scene(tone, 0, hx=w // 2, hy=int(h * .55))[0])
-        d = [st.update(skin_scene(tone, 0, hx=w // 2, hy=int(h * .55))[0])
-             for _ in range(3)][-1]
-        print(f"[8] 色あわせ {tname:6s} {msg} → 再検出 {'OK' if d.found else 'NG'}")
-        if not okc or not d.found:
-            ok = False
-
-    st = SkinTracker(dict(cfg["marker"]), dict(cfg["skin"]))
-    st.learn_background(skin_scene(tones["中間の肌"], 0, hand=False)[0])
-    st.freeze(True)
-    still = sum(st.update(skin_scene(tones["中間の肌"], 0, open_hand=False,
-                                     hx=w // 2, hy=int(h * .55))[0]).found
-                for _ in range(900))
-    print(f"[9] 背景凍結    プレイ中(30秒)に手を静止させたまま 検出 {still}/900")
-    if still < 890:
-        ok = False
-        print("    → NG: 静止した手が背景に溶けています")
-
-    # 10) 色プリセット：自分の色だけに反応し、他の色や黒板を無視するか
+    # 5) 色プリセット：自分の色だけに反応し、他の色や黒板を無視するか
     P = cfg.data.get("presets", {})
     sample = {"green": (60, 190, 70), "pink": (190, 60, 220), "blue": (215, 80, 30),
               "purple": (180, 50, 120), "cyan": (220, 200, 40),
@@ -256,7 +134,7 @@ def run_selftest(cfg):
             got = tp.update(f).found
             if got != (cname == pname):
                 bad.append(f"{P[pname]['label']}→{P[cname]['label']}")
-    print(f"[10] 色プリセット {len(P)}色 × {len(P)}色の総当たり: "
+    print(f"[5] 色プリセット {len(P)}色 × {len(P)}色の総当たり: "
           f"{'すべて正しく判定' if not bad else 'NG ' + ', '.join(bad)}")
     if bad:
         ok = False
@@ -273,7 +151,7 @@ def run_selftest(cfg):
         tg2._last, tg2._lost = None, 999
         if tg2.update(f).found:
             ng.append(label)
-    print(f"[11] 誤反応チェック 教室にありがちな物({len(envs)}種): "
+    print(f"[6] 誤反応チェック 教室にありがちな物({len(envs)}種): "
           f"{'すべて無視できた' if not ng else 'NG 反応した→' + ', '.join(ng)}")
     if ng:
         ok = False

@@ -12,7 +12,7 @@ from .gpio_io import HardwareIO
 from .ranking import Ranking
 from .sound import SoundBank
 from .text import Fonts
-from .tracker import Camera, ColorTracker, SkinTracker
+from .tracker import Camera, ColorTracker
 
 ATTRACT, CALIB, COUNTDOWN, PLAY, RESULT = "attract", "calib", "countdown", "play", "result"
 
@@ -57,24 +57,13 @@ class App:
         self.fps_target = int(sc.get("fps", 30))
         self.fonts = Fonts(self.H, prefer_ja=(cfg["ui"].get("language", "ja") == "ja"))
 
-        presets = cfg.data.get("presets", {})
-        self.trackers = {
-            "color": ColorTracker(cfg["marker"], presets),
-            "skin": SkinTracker(cfg["marker"], cfg.data.get("skin", {}), presets),
-        }
-        self.track_mode = cfg["marker"].get("mode", "color")
-        if self.track_mode not in self.trackers:
-            self.track_mode = "color"
-        self.tracker = self.trackers[self.track_mode]
+        self.tracker = ColorTracker(cfg["marker"], cfg.data.get("presets", {}))
         self.cam = Camera(cfg["camera"]) if use_camera else None
         self.cam_ok = bool(self.cam and self.cam.ok)
         self.io = HardwareIO(cfg["gpio"])
         self.rank = Ranking(os.path.join(base, "scores.json"))
         self.engine = GameEngine(cfg["game"], aspect=self.W / self.H)
 
-        self.mode = cfg["game"].get("mode", "touch")   # "grab" = 掴んで取る
-        self.grab = False
-        self.calib_step = 0
         self.state = ATTRACT
         self.state_t = time.time()
         self.frame = None
@@ -105,24 +94,8 @@ class App:
         self.state = s
         self.state_t = time.time()
         self.hold_since = None
-        if s == CALIB:
-            self.calib_step = 0
-        # 素手モード：プレイ中は背景の更新を止める（止めた手が背景に溶けないように）
-        for tr in getattr(self, "trackers", {}).values():
-            tr.freeze(s in (COUNTDOWN, PLAY))
-
-    def switch_tracking(self, mode=None):
-        """素手（肌色）と 色マーカー を切り替える。"""
-        self.track_mode = mode or ("color" if self.track_mode == "skin" else "skin")
-        self.tracker = self.trackers[self.track_mode]
-        self.cfg.data["marker"]["mode"] = self.track_mode
-        self.calib_step = 0
-        self.toast(self.fonts.t("mode_switched") + self.tracker.label)
-        self.snd.play("coin")
 
     def cursor_rgb(self):
-        if self.tracker.name == "skin":
-            return (255, 190, 120)
         return hsv_to_rgb(self.tracker.hue)
 
     def toast(self, text):
@@ -146,12 +119,8 @@ class App:
                     self.set_state(CALIB)
                 elif e.key == pygame.K_d:
                     self.debug = not self.debug
-                elif e.key == pygame.K_m:
-                    self.switch_tracking()
                 elif e.key == pygame.K_k:
-                    ok, msg = self.trackers["color"].next_preset()
-                    if self.track_mode == "skin":
-                        self.switch_tracking("color")     # 色を選んだら色モードへ
+                    ok, msg = self.tracker.next_preset()
                     self.toast(msg)
                     self.snd.play("coin" if ok else "miss")
                     self._save_marker()
@@ -181,14 +150,11 @@ class App:
                 self.frame = f
                 self.det = self.tracker.update(f)
                 self.marker = (self.det.x, self.det.y) if self.det.found else None
-                self.grab = bool(self.det.grab) if self.mode == "grab" else True
                 return
         # カメラが無い場合はマウスで代用（PC での動作確認・非常時用）
         mx, my = pygame.mouse.get_pos()
         self.marker = (mx / self.W, my / self.H)
         self.det = None
-        # カメラなしのときは左クリックを「握り」として扱う（動作確認用）
-        self.grab = pygame.mouse.get_pressed()[0] if self.mode == "grab" else True
 
     # ---------------- 描画部品 ----------------
     def draw_camera_bg(self):
@@ -223,8 +189,7 @@ class App:
         if not self.hold_enabled:
             return False
         now = now or time.time()
-        # 握って始める場合は短くてよい（狙って握る動作自体が意思表示になる）
-        hold_sec = 0.7 if self.mode == "grab" else self.hold_sec
+        hold_sec = self.hold_sec
         x, y = int(nx * self.W), int(ny * self.H)
         r = int(self.H * 0.085)
         inside = False
@@ -232,8 +197,6 @@ class App:
             dx = (self.marker[0] - nx) * self.W
             dy = (self.marker[1] - ny) * self.H
             inside = (dx * dx + dy * dy) ** 0.5 < r + self.cursor_r * self.H * 0.5
-        if inside and self.mode == "grab":
-            inside = self.grab            # 的の上で手を握ったときだけ溜まる
         if inside:
             if self.hold_since is None:
                 self.hold_since = now
@@ -271,20 +234,10 @@ class App:
         r = int(self.cursor_r * self.H)
         col = self.cursor_rgb()
         held = bool(self.det and self.det.held)
-        grabbing = self.mode == "grab" and self.grab
-        if grabbing:
-            # 握っている間は塗りつぶし＋金色のふちで「掴んでいる」ことを伝える
-            pygame.draw.circle(self.screen, col, (x, y), int(r * 0.8))
-            pygame.draw.circle(self.screen, GOLD, (x, y), int(r * 0.8), 6)
-            for a in (-2.2, -0.9, 0.4, 1.7, 2.9):
-                pygame.draw.line(self.screen, GOLD,
-                                 (x + int(r * 0.8 * math.cos(a)), y + int(r * 0.8 * math.sin(a))),
-                                 (x + int(r * 1.15 * math.cos(a)), y + int(r * 1.15 * math.sin(a))), 4)
-        else:
-            pygame.draw.circle(self.screen, col, (x, y), r, 4 if not held else 2)
-            pygame.draw.circle(self.screen, WHITE, (x, y), max(3, r // 8))
-            pygame.draw.line(self.screen, col, (x - r - 10, y), (x - r + 4, y), 3)
-            pygame.draw.line(self.screen, col, (x + r - 4, y), (x + r + 10, y), 3)
+        pygame.draw.circle(self.screen, col, (x, y), r, 4 if not held else 2)
+        pygame.draw.circle(self.screen, WHITE, (x, y), max(3, r // 8))
+        pygame.draw.line(self.screen, col, (x - r - 10, y), (x - r + 4, y), 3)
+        pygame.draw.line(self.screen, col, (x + r - 4, y), (x + r + 10, y), 3)
 
     def draw_target(self, t, now):
         x, y = int(t.x * self.W), int(t.y * self.H)
@@ -346,15 +299,9 @@ class App:
         self.draw_camera_bg()
         T = self.fonts.t
         self.text(self.cfg["ui"]["title"], self.fonts.big, GOLD, y=int(self.H * 0.06))
-        g = self.mode == "grab"
-        if g:
-            k1 = "howto1_skin" if self.tracker.name == "skin" else "howto1_grab"
-        else:
-            k1 = "howto1"
-        self.text(T(k1, color=self.tracker.color_label()),
+        self.text(T("howto1", color=self.tracker.color_label()),
                   self.fonts.small, WHITE, y=int(self.H * 0.22))
-        self.text(T("howto2_grab" if g else "howto2"), self.fonts.small, WHITE,
-                  y=int(self.H * 0.28))
+        self.text(T("howto2"), self.fonts.small, WHITE, y=int(self.H * 0.28))
         self.text(T("howto3", sec=self.cfg["game"]["duration"]), self.fonts.small,
                   DIM, y=int(self.H * 0.34))
 
@@ -375,10 +322,9 @@ class App:
         self.text(T("plays", n=st["plays"]), self.fonts.tiny, DIM, y=int(self.H * 0.95))
         if not self.cam_ok:
             self.text(T("nocam"), self.fonts.tiny, RED, x=14, y=int(self.H * 0.95))
-        if self.hold_button(0.135, 0.60, T("hold_start_grab" if g else "hold_start")):
+        if self.hold_button(0.135, 0.60, T("hold_start")):
             go = True
-        key = "press" if not self.hold_enabled else (
-            "press_or_grab" if g else "press_or_hold")
+        key = "press" if not self.hold_enabled else "press_or_hold"
         if int(now * 2) % 2 == 0:
             self.text(T(key), self.fonts.mid, GREEN, y=int(self.H * 0.865))
         self.draw_cursor()
@@ -388,54 +334,19 @@ class App:
             self.name = ""
             self.set_state(COUNTDOWN)
 
-    def calib_steps(self):
-        """追跡方式とゲームモードに応じた手順を組み立てる。"""
-        if self.tracker.name == "skin":
-            steps = ["bg", "skin"]       # 背景を覚える → 肌の色にあわせる
-        else:
-            steps = ["color"]
-        if self.mode == "grab":
-            steps += ["open", "closed"]  # パー → グー
-        return steps
-
     def screen_calib(self, go):
-        """手順を1つずつ進める。ボタン（スペース）で次へ。"""
+        """枠にマーカーを入れてボタンを押すと、その色を登録する。"""
         self.draw_camera_bg()
         T = self.fonts.t
-        steps = self.calib_steps()
-        step = self.calib_step
-        done = step >= len(steps)
-        self.text(T("calib_title") + f"  [{self.tracker.label}"
-                  + (f" / {self.tracker.color_label()}]" if self.tracker.name == "color" else "]"),
+        self.text(T("calib_title") + f"  [{self.tracker.color_label()}]",
                   self.fonts.mid, GOLD, y=int(self.H * 0.06))
-
-        if not done:
-            key = steps[step]
-            self.text(f"{step + 1}/{len(steps)}   {T('calib_l_' + key)}",
-                      self.fonts.small, WHITE, y=int(self.H * 0.16))
-            if key in ("color", "skin"):
-                w, h = int(self.W * 0.22), int(self.H * 0.22)
-                pygame.draw.rect(self.screen, GOLD,
-                                 pygame.Rect((self.W - w) // 2, (self.H - h) // 2, w, h), 5)
-        else:
-            self.text(T("calib_done"), self.fonts.small, GREEN, y=int(self.H * 0.16))
-
-        # いま何が見えているかを数字で出す（当日の調整はこれを見ながら）
-        if self.det is not None and self.det.found:
-            self.text(f"fill {self.det.fill:.2f}   solidity {self.det.solidity:.2f}"
-                      f"   しきい値 {self.tracker.grab_off:.2f}/{self.tracker.grab_on:.2f}",
-                      self.fonts.tiny, DIM, y=int(self.H * 0.24))
-            if self.mode == "grab" and (done or steps[step] == "closed"):
-                self.text("グー" if self.grab else "パー", self.fonts.big,
-                          GOLD if self.grab else CYAN, y=int(self.H * 0.60))
-        if self.tracker.name == "skin":
-            self.text(f"Cr {self.tracker.cr[0]}-{self.tracker.cr[1]}   "
-                      f"Cb {self.tracker.cb[0]}-{self.tracker.cb[1]}",
-                      self.fonts.tiny, DIM, y=int(self.H * 0.78))
-        else:
-            sw = pygame.Surface((80, 80))
-            sw.fill(self.cursor_rgb())
-            self.screen.blit(sw, (self.W // 2 - 40, int(self.H * 0.74)))
+        self.text(T("calib_msg"), self.fonts.small, WHITE, y=int(self.H * 0.16))
+        w, h = int(self.W * 0.22), int(self.H * 0.22)
+        pygame.draw.rect(self.screen, GOLD,
+                         pygame.Rect((self.W - w) // 2, (self.H - h) // 2, w, h), 5)
+        sw = pygame.Surface((80, 80))
+        sw.fill(self.cursor_rgb())
+        self.screen.blit(sw, (self.W // 2 - 40, int(self.H * 0.74)))
         self.text(T("calib_keys"), self.fonts.tiny, DIM, y=int(self.H * 0.90))
         if time.time() - self.msg_t < 5:
             self.text(self.msg, self.fonts.small, GREEN, y=int(self.H * 0.84))
@@ -446,34 +357,18 @@ class App:
 
         if not go:
             return
-        if done:
-            self.set_state(ATTRACT)
-            return
         if self.frame is None:
             self.toast("カメラ映像がありません")
             return
-
-        key = steps[step]
-        if key == "bg":
-            ok, msg = self.tracker.learn_background(self.frame)
-        elif key in ("color", "skin"):
-            ok, msg = self.tracker.calibrate(self.frame)
-        else:
-            ok, msg = self.tracker.calibrate_gesture(
-                self.frame, "open" if key == "open" else "closed")
+        ok, msg = self.tracker.calibrate(self.frame)
         self.toast(msg)
         self.snd.play("coin" if ok else "miss")
         if ok:
-            self.calib_step = step + 1
-            if self.calib_step >= len(steps):
-                self._save_marker()
+            self._save_marker()
 
     def _save_marker(self):
-        """色あわせ・握り判定の結果を config.json に書き戻す。"""
+        """色あわせの結果を config.json に書き戻す。"""
         self.cfg.data["marker"].update(self.tracker.export())
-        self.cfg.data["marker"]["mode"] = self.track_mode
-        if hasattr(self.tracker, "export_skin"):
-            self.cfg.data.setdefault("skin", {}).update(self.tracker.export_skin())
         self.cfg.save()
 
     def screen_countdown(self, go):
@@ -501,8 +396,7 @@ class App:
     def screen_play(self, go):
         now = time.time()
         self.draw_camera_bg()
-        events = self.engine.update(now, self.marker, self.cursor_r,
-                                    can_take=(self.grab or self.mode != "grab"))
+        events = self.engine.update(now, self.marker, self.cursor_r)
         for name, t, pts in events:
             if name == "hit":
                 self.snd.play("hit")
@@ -524,15 +418,6 @@ class App:
                 return
         for t in self.engine.targets:
             self.draw_target(t, now)
-        # 手が◯に重なっているのに握っていない人へのヒント
-        if self.mode == "grab" and self.marker and not self.grab:
-            for t in self.engine.targets:
-                if t.kind != BOMB and self.engine._dist(
-                        self.marker[0], self.marker[1], t.x, t.y) <= t.r + self.cursor_r * 1.6:
-                    img = self.fonts.small.render(self.fonts.t("grab_now"), True, GOLD)
-                    self.screen.blit(img, img.get_rect(
-                        center=(int(t.x * self.W), int(t.y * self.H - t.r * self.H - 34))))
-                    break
         self.draw_cursor()
         self.draw_pops(now)      # 得点表示はカーソルより手前に
 
@@ -575,12 +460,10 @@ class App:
                   self.fonts.small, DIM, y=int(self.H * 0.62))
         self.text(f"{T('name')} {self.name or '____'}", self.fonts.small,
                   WHITE, y=int(self.H * 0.70))
-        g = self.mode == "grab"
-        if self.hold_button(0.135, 0.60, T("hold_again_grab" if g else "hold_again")):
+        if self.hold_button(0.135, 0.60, T("hold_again")):
             go = True
         if int(now * 2) % 2 == 0:
-            self.text(T("again" if not self.hold_enabled else
-                        ("again_or_grab" if g else "again_or_hold")),
+            self.text(T("again" if not self.hold_enabled else "again_or_hold"),
                       self.fonts.mid, GREEN, y=int(self.H * 0.82))
         self.draw_cursor()
         self.draw_debug()
