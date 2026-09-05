@@ -13,8 +13,8 @@ FONT_CANDIDATES = [
 ]
 
 JA = {
-    "howto1": "赤いカードをカメラに向けて動かそう",
-    "howto1_grab": "赤い手袋をつけた手で、つかんで集めよう",
+    "howto1": "{color}のカードをカメラに向けて動かそう",
+    "howto1_grab": "{color}の手袋をつけた手で、つかんで集めよう",
     "howto2_grab": "◯の上で手をグーに！　★はボーナス　×は掴むと減点",
     "hold_start_grab": "つかんでスタート",
     "hold_again_grab": "つかんでもう一度",
@@ -39,7 +39,7 @@ JA = {
     "plays": "本日 {n} 人がプレイ",
     "calib_title": "色あわせ（キャリブレーション）",
     "calib_msg": "枠の中にマーカーを入れてボタン（またはスペース）",
-    "calib_keys": "[ ] 許容幅  - = 明るさしきい値  M 素手/マーカー切替  ESC 戻る",
+    "calib_keys": "[ ] 許容幅  - = 明るさしきい値  M 素手/マーカー  K 色を変える  ESC 戻る",
     "ready": "よういして！",
     "go": "スタート！",
     "score": "スコア",
@@ -56,8 +56,8 @@ JA = {
     "newrecord": "本日の新記録！",
 }
 EN = {
-    "howto1": "Move the red card in front of the camera",
-    "howto1_grab": "Wear the red glove and grab the targets",
+    "howto1": "Move the {color} marker in front of the camera",
+    "howto1_grab": "Wear the {color} glove and grab the targets",
     "howto2_grab": "Close your hand over O - * is bonus, grabbing X costs points",
     "hold_start_grab": "GRAB TO START",
     "hold_again_grab": "GRAB TO PLAY AGAIN",
@@ -82,7 +82,7 @@ EN = {
     "plays": "{n} plays today",
     "calib_title": "COLOR CALIBRATION",
     "calib_msg": "Put the marker in the box, then press the button/space",
-    "calib_keys": "[ ] tolerance   - = brightness   M skin/marker   ESC back",
+    "calib_keys": "[ ] tolerance   - = brightness   M skin/marker   K color   ESC back",
     "ready": "READY",
     "go": "GO!",
     "score": "SCORE",

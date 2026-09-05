@@ -57,9 +57,10 @@ class App:
         self.fps_target = int(sc.get("fps", 30))
         self.fonts = Fonts(self.H, prefer_ja=(cfg["ui"].get("language", "ja") == "ja"))
 
+        presets = cfg.data.get("presets", {})
         self.trackers = {
-            "color": ColorTracker(cfg["marker"]),
-            "skin": SkinTracker(cfg["marker"], cfg.data.get("skin", {})),
+            "color": ColorTracker(cfg["marker"], presets),
+            "skin": SkinTracker(cfg["marker"], cfg.data.get("skin", {}), presets),
         }
         self.track_mode = cfg["marker"].get("mode", "color")
         if self.track_mode not in self.trackers:
@@ -147,6 +148,13 @@ class App:
                     self.debug = not self.debug
                 elif e.key == pygame.K_m:
                     self.switch_tracking()
+                elif e.key == pygame.K_k:
+                    ok, msg = self.trackers["color"].next_preset()
+                    if self.track_mode == "skin":
+                        self.switch_tracking("color")     # 色を選んだら色モードへ
+                    self.toast(msg)
+                    self.snd.play("coin" if ok else "miss")
+                    self._save_marker()
                 elif e.key == pygame.K_LEFTBRACKET:
                     self.tracker.hue_tol = max(4, self.tracker.hue_tol - 2)
                 elif e.key == pygame.K_RIGHTBRACKET:
@@ -343,7 +351,8 @@ class App:
             k1 = "howto1_skin" if self.tracker.name == "skin" else "howto1_grab"
         else:
             k1 = "howto1"
-        self.text(T(k1), self.fonts.small, WHITE, y=int(self.H * 0.22))
+        self.text(T(k1, color=self.tracker.color_label()),
+                  self.fonts.small, WHITE, y=int(self.H * 0.22))
         self.text(T("howto2_grab" if g else "howto2"), self.fonts.small, WHITE,
                   y=int(self.H * 0.28))
         self.text(T("howto3", sec=self.cfg["game"]["duration"]), self.fonts.small,
@@ -396,7 +405,8 @@ class App:
         steps = self.calib_steps()
         step = self.calib_step
         done = step >= len(steps)
-        self.text(T("calib_title") + f"  [{self.tracker.label}]",
+        self.text(T("calib_title") + f"  [{self.tracker.label}"
+                  + (f" / {self.tracker.color_label()}]" if self.tracker.name == "color" else "]"),
                   self.fonts.mid, GOLD, y=int(self.H * 0.06))
 
         if not done:

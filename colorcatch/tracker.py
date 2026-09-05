@@ -31,8 +31,10 @@ class ColorTracker:
     name = "color"
     label = "色マーカー"
 
-    def __init__(self, marker_cfg):
+    def __init__(self, marker_cfg, presets=None):
         self.cfg = marker_cfg
+        self.presets = dict(presets or {})
+        self.color = marker_cfg.get("color", "custom")
         self.hue = int(marker_cfg["hue"])
         self.hue_tol = int(marker_cfg["hue_tol"])
         self.sat_min = int(marker_cfg["sat_min"])
@@ -185,6 +187,30 @@ class ColorTracker:
                           f"→ しきい値 {self.grab_off:.2f}/{self.grab_on:.2f}")
         return True, f"{'パー' if which == 'open' else 'グー'}を登録 (fill={fill:.2f})"
 
+    def color_label(self):
+        p = self.presets.get(self.color)
+        return p["label"] if p else "登録した色"
+
+    def set_preset(self, name):
+        """あらかじめ用意した色（緑・ピンク…）に切り替える。"""
+        p = self.presets.get(name)
+        if not p:
+            return False, f"{name} という色の設定がありません"
+        self.color = name
+        self.hue = int(p["hue"])
+        self.hue_tol = int(p.get("hue_tol", 12))
+        self.sat_min = int(p.get("sat_min", 120))
+        self.val_min = int(p.get("val_min", 80))
+        self._last, self._lost = None, 999
+        return True, f"{p['label']}のマーカーに切り替えました"
+
+    def next_preset(self):
+        names = list(self.presets)
+        if not names:
+            return False, "色の設定がありません"
+        i = names.index(self.color) + 1 if self.color in names else 0
+        return self.set_preset(names[i % len(names)])
+
     def calibrate(self, bgr, roi_ratio=0.22):
         """画面中央の四角に写っているものの色を新しいマーカー色として採用する。"""
         h, w = bgr.shape[:2]
@@ -207,11 +233,12 @@ class ColorTracker:
         self.sat_min = max(60, min(200, int(sat * 0.75)))
         self.val_min = max(40, min(200, int(val * 0.6)))
         self.hue_tol = int(self.cfg.get("hue_tol", 12))
+        self.color = "custom"
         self._last, self._lost = None, 999
         return True, f"色を登録しました (H={self.hue} S>{self.sat_min} V>{self.val_min})"
 
     def export(self):
-        return {"hue": self.hue, "hue_tol": self.hue_tol,
+        return {"color": self.color, "hue": self.hue, "hue_tol": self.hue_tol,
                 "sat_min": self.sat_min, "val_min": self.val_min,
                 "min_area": self.min_area, "smooth": self.smooth,
                 "hold_frames": self.hold_frames,
@@ -233,8 +260,11 @@ class SkinTracker(ColorTracker):
     name = "skin"
     label = "素手（肌色）"
 
-    def __init__(self, marker_cfg, skin_cfg=None):
-        super().__init__(marker_cfg)
+    def color_label(self):
+        return "素手"
+
+    def __init__(self, marker_cfg, skin_cfg=None, presets=None):
+        super().__init__(marker_cfg, presets)
         c = dict(skin_cfg or {})
         self.cr = list(c.get("cr", [133, 177]))
         self.cb = list(c.get("cb", [77, 127]))
